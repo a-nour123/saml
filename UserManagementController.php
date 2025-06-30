@@ -529,7 +529,7 @@ public function openImportLdap()
                 }
             }
         }
-        dd($tree);
+     
     } catch (\Throwable $th) {
         $ldapMessage = 'Can\'t contact LDAP server';
         return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'ldapMessage', 'roles'));
@@ -543,12 +543,13 @@ public function openImportLdap()
     {
 
         try {
-
+         
 
             $departments = $request->departments;  // Assuming you're getting this from form or request
         $lastDepartment = end($departments)['name'];
+        $ou = end($departments)['parent']; 
       
-            $users = $this->getAllUsersUnderOU($lastDepartment);
+            $users = $this->getAllUsersUnderGroup($ou,$lastDepartment);
             dd($users);
 
 
@@ -600,6 +601,54 @@ public function openImportLdap()
   
     return $users;
 }
+
+public function getAllUsersUnderGroup($ouName, $groupName)
+{
+    $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
+
+    $this->LdapConnection();
+
+    // 1- البحث عن DN للـ OU
+    $ouEntry = $this->connection->query()
+        ->where('objectClass', '=', 'organizationalUnit')
+        ->where('ou', '=', $ouName)
+        ->first();
+
+    if (!$ouEntry) {
+        return [];  // OU غير موجود
+    }
+
+    $ouDn = $ouEntry['dn'];
+
+    // 2- البحث عن الـ Group داخل هذا الـ OU
+    $groupEntry = $this->connection->query()
+        ->in($ouDn)
+        ->where('objectClass', '=', 'group')
+        ->where('cn', '=', $groupName)
+        ->first();
+
+    if (!$groupEntry || !isset($groupEntry['member'])) {
+        return [];  // Group غير موجود أو بدون أعضاء
+    }
+
+    $membersDn = (array) $groupEntry['member'];
+
+    $users = [];
+
+    // 3- جلب بيانات كل User من DN
+    foreach ($membersDn as $memberDn) {
+        $user = $this->connection->query()
+            ->where('distinguishedName', '=', $memberDn)
+            ->first();
+
+        if ($user) {
+            $users[] = $user;
+        }
+    }
+
+    return $users;
+}
+
 
       public function LdapConnection()
     {
