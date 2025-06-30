@@ -24,6 +24,7 @@ use Validator;
 use LdapRecord\Container;
 use LdapRecord\Connection;
 use LdapRecord\Models\Entry;
+use Illuminate\Support\Facades\DB;
 
 class UserManagementController extends Controller
 {
@@ -558,7 +559,8 @@ class UserManagementController extends Controller
     public function getAllUsersUnderOU($ouName)
 {
     $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
-
+  
+    $this->LdapConnection(); 
     // بحث: جيب كل OUs اللي اسمها يساوي $ouName عشان تجيب DN الدقيق
     $ouEntry = $this->connection->query()
         ->where('objectClass', '=', 'organizationalUnit')
@@ -568,15 +570,18 @@ class UserManagementController extends Controller
     if (!$ouEntry) {
         return [];  // OU غير موجود
     }
+   
 
     $ouDn = $ouEntry['dn'];
 
-    // الآن: بحث كل المستخدمين تحت هذا الـ DN (بما فيهم اللي داخل sub-OUs)
-    $users = $this->connection->query()
-        ->from($ouDn)             // Start search from this OU
-        ->where('objectClass', '=', 'user')  // Filter users
-        ->get();
 
+    // الآن: بحث كل المستخدمين تحت هذا الـ DN (بما فيهم اللي داخل sub-OUs)
+      // Search for users under this OU and all sub-OUs
+    $users = $this->connection->query()
+        ->in($ouDn)  // Set base search DN
+        ->where('objectClass', '=', 'user')
+        ->get();
+  
     return $users;
 }
 
