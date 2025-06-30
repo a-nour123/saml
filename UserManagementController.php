@@ -577,10 +577,15 @@ class UserManagementController extends Controller
 
     // الآن: بحث كل المستخدمين تحت هذا الـ DN (بما فيهم اللي داخل sub-OUs)
       // Search for users under this OU and all sub-OUs
-    $users = $this->connection->query()
-        ->in($ouDn)  // Set base search DN
+    // $users = $this->connection->query()
+    //     ->in($ouDn)  // Set base search DN
+    //     ->where('objectClass', '=', 'user')
+    //     ->get();
+
+        $users = $this->connection->query()
+        ->in($ouDn)
         ->where('objectClass', '=', 'user')
-        ->get();
+        ->first();
   
     return $users;
 }
