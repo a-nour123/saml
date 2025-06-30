@@ -466,67 +466,78 @@ class UserManagementController extends Controller
     }
 
 
-    public function openImportLdap()
-    {
+public function openImportLdap()
+{
+    $breadcrumbs = [
+        ['link' => route('admin.dashboard'), 'name' => __('locale.Dashboard')],
+        ['link' => 'javascript:void(0)', 'name' => __('locale.Configure')],
+        ['link' => route('admin.configure.user.index'), 'name' => __('locale.Users')],
+        ['name' => __('user.ldap_import')]
+    ];
 
-        // Defining breadcrumbs for the page
-        $breadcrumbs = [
-            ['link' => route('admin.dashboard'), 'name' => __('locale.Dashboard')],
-            ['link' => 'javascript:void(0)', 'name' => __('locale.Configure')],
-            ['link' => route('admin.configure.user.index'), 'name' => __('locale.Users')],
-            ['name' => __('user.ldap_import')]
-        ];
-        $roles = Role::all();
-        try {
-            //code...
+    $roles = Role::all();
 
-            $this->LdapConnection();
+    try {
+        $this->LdapConnection();
 
+        $excludedOUs = ['Domain Controllers', 'Microsoft Exchange Security Groups'];
 
-            $excludedOUs = ['Domain Controllers', 'Microsoft Exchange Security Groups'];
+        $tree = [];
 
-            // Initialize an empty array to store the hierarchical tree
-            $tree = [];
+        // Get all OUs
+        $ous = $this->connection->query()
+            ->where('objectClass', '=', 'organizationalUnit')
+            ->get();
 
-            // Query all OUs
-            $ous = $this->connection->query()->where('objectClass', '=', 'organizationalUnit')->get();
+        foreach ($ous as $ou) {
+            $dn = $ou['dn'];
 
-            // Iterate through OUs and organize them into a tree structure
-            foreach ($ous as $ou) {
-                $dn = $ou['dn'];
+            // Extract OU path from DN
+            preg_match_all('/OU=([^,]+)/', $dn, $matches);
 
-                // Extract the OUs from the DN
-                preg_match_all('/OU=([^,]+)/', $dn, $matches);
+            if (!empty($matches[1])) {
+                $hierarchicalOUs = array_reverse($matches[1]);
 
-                if (!empty($matches[1])) {
-                    // Reverse to maintain hierarchy from root to leaf
-                    $hierarchicalOUs = array_reverse($matches[1]);
+                // Filter out excluded OUs
+                $hierarchicalOUs = array_filter($hierarchicalOUs, function ($ouName) use ($excludedOUs) {
+                    return !in_array($ouName, $excludedOUs);
+                });
 
-                    // Filter out the excluded OUs
-                    $hierarchicalOUs = array_filter($hierarchicalOUs, function ($ouName) use ($excludedOUs) {
-                        return !in_array($ouName, $excludedOUs);
-                    });
+                if (!empty($hierarchicalOUs)) {
+                    $currentNode = &$tree;
 
-                    // Add the OUs to the tree structure only if there are OUs remaining after filtering
-                    if (!empty($hierarchicalOUs)) {
-                        $currentNode = &$tree;
-                        foreach ($hierarchicalOUs as $ouName) {
-                            if (!isset($currentNode[$ouName])) {
-                                $currentNode[$ouName] = [];
-                            }
-                            $currentNode = &$currentNode[$ouName];
+                    foreach ($hierarchicalOUs as $ouName) {
+                        if (!isset($currentNode[$ouName])) {
+                            $currentNode[$ouName] = [];
+                        }
+                        $currentNode = &$currentNode[$ouName];
+                    }
+
+                    // Get groups under this OU
+                    $groups = $this->connection->query()
+                        ->in($dn)
+                        ->where('objectClass', '=', 'group')
+                        ->get();
+
+                    if (!empty($groups)) {
+                        $currentNode['groups'] = [];
+                        foreach ($groups as $group) {
+                            $groupName = $group['cn'] ?? '(Unnamed Group)';
+                            $currentNode['groups'][] = $groupName;
                         }
                     }
                 }
             }
-        } catch (\Throwable $th) {
-            $ldapMessage = 'Can\'t contact LDAP server';
-            return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'ldapMessage','roles'));
         }
-
-
-        return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'tree','roles'));
+        dd($tree);
+    } catch (\Throwable $th) {
+        $ldapMessage = 'Can\'t contact LDAP server';
+        return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'ldapMessage', 'roles'));
     }
+
+    return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'tree', 'roles'));
+}
+
 
     public function saveImportLdap(Request $request)
     {
