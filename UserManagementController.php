@@ -8,6 +8,7 @@ use App\Http\Traits\LdapTrait;
 use App\Http\Traits\UserPermissionTrait;
 use App\Http\Traits\UserTeamTrait;
 use App\Http\Traits\UserTrait;
+use App\Jobs\ImportLdapOftUsers;
 use App\Models\Department;
 use App\Models\Job;
 use App\Models\Permission;
@@ -109,13 +110,13 @@ class UserManagementController extends Controller
                 'errors' => $errors,
             );
         } else {
-                $userCount = User::where('role_id', 1)->count();
-                if ($request->role_id == 1 && $userCount >= 2) {
-                    $data = array(
-                        'status' => 0,
-                        'errors' => ['Cannot add a new user because the maximum limit of 10 users with the role "Administrator" has been reached.'],
-                    );
-                }else{
+                // $userCount = User::where('role_id', 1)->count();
+                // if ($request->role_id == 1 && $userCount >= 2) {
+                //     $data = array(
+                //         'status' => 0,
+                //         'errors' => ['Cannot add a new user because the maximum limit of 10 users with the role "Administrator" has been reached.'],
+                //     );
+                // }else{
                     $request->salt = generate_token(20);
                     $user = $this->AddGrcUser($request);
                     $permissions = RoleResponsibility::where('role_id', $request->role_id)->pluck('permission_id')->toArray();
@@ -134,7 +135,7 @@ class UserManagementController extends Controller
                     $teamNames = $user->teams->pluck('name')->toArray();
                     $message = __("locale.ANewUserWithName") . ' "' . ($request->name ?? __('locale.[No Name]')) . '" ' . __('locale.CreatedBy') . ' "' . auth()->user()->name . '".';
                     write_log($user->id, auth()->id(), $message, 'Adding user');
-                }
+                // }
 
         }
 
@@ -466,6 +467,7 @@ class UserManagementController extends Controller
     }
 
 
+
 public function openImportLdap()
 {
     $breadcrumbs = [
@@ -484,11 +486,17 @@ public function openImportLdap()
 
         $tree = [];
 
-        // Get all OUs
+        // Get all OUs first
         $ous = $this->connection->query()
             ->where('objectClass', '=', 'organizationalUnit')
             ->get();
 
+        // Get all groups separately
+        $groups = $this->connection->query()
+            ->where('objectClass', '=', 'group')
+            ->get();
+
+        // Build OU structure
         foreach ($ous as $ou) {
             $dn = $ou['dn'];
 
@@ -512,26 +520,50 @@ public function openImportLdap()
                         }
                         $currentNode = &$currentNode[$ouName];
                     }
+                }
+            }
+        }
 
-                    // Get groups under this OU
-                    $groups = $this->connection->query()
-                        ->in($dn)
-                        ->where('objectClass', '=', 'group')
-                        ->get();
+        // Assign groups to their OUs
+        foreach ($groups as $group) {
+            $dn = $group['dn'];
+            $groupName = $group['cn'][0] ?? '(Unnamed Group)';
 
-                    if (!empty($groups)) {
-                        $currentNode['groups'] = [];
-                        foreach ($groups as $group) {
-                            $groupName = $group['cn'] ?? '(Unnamed Group)';
-                            $currentNode['groups'][] = $groupName;
+            preg_match_all('/OU=([^,]+)/', $dn, $matches);
+            if (!empty($matches[1])) {
+                $hierarchicalOUs = array_reverse($matches[1]);
+                $hierarchicalOUs = array_filter($hierarchicalOUs, function ($ouName) use ($excludedOUs) {
+                    return !in_array($ouName, $excludedOUs);
+                });
+
+                if (!empty($hierarchicalOUs)) {
+                    $currentNode = &$tree;
+                    $found = true;
+
+                    // Navigate to the deepest OU
+                    foreach ($hierarchicalOUs as $ouName) {
+                        if (!isset($currentNode[$ouName])) {
+                            $found = false;
+                            break;
                         }
+                        $currentNode = &$currentNode[$ouName];
+                    }
+
+                    if ($found) {
+                        if (!isset($currentNode['groups'])) {
+                            $currentNode['groups'] = [];
+                        }
+                        $currentNode['groups'][] = [
+                            'count' => 1,
+                            0 => $groupName
+                        ];
                     }
                 }
             }
         }
-     
+
     } catch (\Throwable $th) {
-        $ldapMessage = 'Can\'t contact LDAP server';
+        $ldapMessage = 'Can\'t contact LDAP server: ' . $th->getMessage();
         return view('admin.content.configure.user_management.ldap_import', compact('breadcrumbs', 'ldapMessage', 'roles'));
     }
 
@@ -539,115 +571,170 @@ public function openImportLdap()
 }
 
 
+
+
+    // public function saveImportLdap(Request $request)
+    // {
+    //     // dd($request->all());
+
+    //     try {
+
+    //         $lastDepartment = $request->group_name;
+    //         $ou =  $request->group_ou_path;
+
+    //         $users = $this->getAllUsersUnderGroup($ou,$lastDepartment);
+    //         dd($users);
+
+
+    //         return response()->json([
+    //             'success' => true,
+    //             'message' => __('locale.DepartmentsImportedSuccessfully'),
+    //             'redirect' => route('admin.hierarchy.department.index')
+    //         ]);
+    //     } catch (\Exception $e) {
+    //         DB::rollBack();
+
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => $e->getMessage()
+    //         ], 500);
+    //     }
+    // }
+
     public function saveImportLdap(Request $request)
-    {
+{
+    try {
+        $lastDepartment = $request->group_name;
+        $ou = $request->group_ou_path;
+        $roleId = $request->role_id;
 
-        try {
-         
+        // Get all users from LDAP group
+        $users = $this->getAllUsersUnderGroup($ou, $lastDepartment);
 
-            $departments = $request->departments;  // Assuming you're getting this from form or request
-        $lastDepartment = end($departments)['name'];
-        $ou = end($departments)['parent']; 
-      
-            $users = $this->getAllUsersUnderGroup($ou,$lastDepartment);
-            dd($users);
-
-
-            return response()->json([
-                'success' => true,
-                'message' => __('locale.DepartmentsImportedSuccessfully'),
-                'redirect' => route('admin.hierarchy.department.index')
-            ]);
-        } catch (\Exception $e) {
-            DB::rollBack();
-
+        if (empty($users)) {
             return response()->json([
                 'success' => false,
-                'message' => $e->getMessage()
-            ], 500);
+                'message' => __('locale.NoUsersFoundInGroup')
+            ], 400);
         }
+
+
+        // Process users in chunks of 500
+        $userChunks = array_chunk($users, 200);
+
+
+        foreach ($userChunks as $chunk) {
+            // Prepare the data for the job
+            $userData = array_map(function($user) {
+                $username = $user['samaccountname'][0] ??
+                           strtolower(str_replace(' ', '.', $user['cn'][0] ?? ''));
+
+                return [
+                    'name' => $user['cn'][0] ?? '',
+                    'username' => $username,
+                    'email' => $user['mail'][0] ?? '',
+                    'phone' => $user['telephonenumber'][0] ?? '',
+                    'department' => $user['department'][0] ?? '',
+                    'title' => $user['title'][0] ?? '',
+                    // Add any other fields you need
+                ];
+            }, $chunk);
+
+
+            dispatch(new ImportLdapOftUsers($userData, $roleId))
+                    ->delay(now()->addSeconds(10));
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => __('locale.UsersImportStarted'),
+            'redirect' => route('admin.configure.user.index')
+        ]);
+
+    } catch (\Exception $e) {
+        return response()->json([
+            'success' => false,
+            'message' => $e->getMessage()
+        ], 500);
     }
-
-    public function getAllUsersUnderOU($ouName)
-{
-    $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
-  
-    $this->LdapConnection(); 
-    // بحث: جيب كل OUs اللي اسمها يساوي $ouName عشان تجيب DN الدقيق
-    $ouEntry = $this->connection->query()
-        ->where('objectClass', '=', 'organizationalUnit')
-        ->where('ou', '=', $ouName)
-        ->first();
-
-    if (!$ouEntry) {
-        return [];  // OU غير موجود
-    }
-   
-
-    $ouDn = $ouEntry['dn'];
-
-
-    // الآن: بحث كل المستخدمين تحت هذا الـ DN (بما فيهم اللي داخل sub-OUs)
-      // Search for users under this OU and all sub-OUs
-    // $users = $this->connection->query()
-    //     ->in($ouDn)  // Set base search DN
-    //     ->where('objectClass', '=', 'user')
-    //     ->get();
-
-        $users = $this->connection->query()
-        ->in($ouDn)
-        ->where('objectClass', '=', 'user')
-        ->first();
-  
-    return $users;
 }
 
-public function getAllUsersUnderGroup($ouName, $groupName)
-{
-    $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
+    // public function getAllUsersUnderOU($ouName)
+    // {
+    //     $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
 
-    $this->LdapConnection();
+    //     $this->LdapConnection();
+    //     // بحث: جيب كل OUs اللي اسمها يساوي $ouName عشان تجيب DN الدقيق
+    //     $ouEntry = $this->connection->query()
+    //         ->where('objectClass', '=', 'organizationalUnit')
+    //         ->where('ou', '=', $ouName)
+    //         ->first();
 
-    // 1- البحث عن DN للـ OU
-    $ouEntry = $this->connection->query()
-        ->where('objectClass', '=', 'organizationalUnit')
-        ->where('ou', '=', $ouName)
-        ->first();
+    //     if (!$ouEntry) {
+    //         return [];
+    //     }
 
-    if (!$ouEntry) {
-        return [];  // OU غير موجود
-    }
+    //     $ouDn = $ouEntry['dn'];
 
-    $ouDn = $ouEntry['dn'];
+    //     // Search for users under this OU and all sub-OUs
+    //     // $users = $this->connection->query()
+    //     //     ->in($ouDn)  // Set base search DN
+    //     //     ->where('objectClass', '=', 'user')
+    //     //     ->get();
 
-    // 2- البحث عن الـ Group داخل هذا الـ OU
-    $groupEntry = $this->connection->query()
-        ->in($ouDn)
-        ->where('objectClass', '=', 'group')
-        ->where('cn', '=', $groupName)
-        ->first();
+    //         $users = $this->connection->query()
+    //         ->in($ouDn)
+    //         ->where('objectClass', '=', 'user')
+    //         ->first();
 
-    if (!$groupEntry || !isset($groupEntry['member'])) {
-        return [];  // Group غير موجود أو بدون أعضاء
-    }
+    //     return $users;
+    // }
 
-    $membersDn = (array) $groupEntry['member'];
+    public function getAllUsersUnderGroup($ouName, $groupName)
+    {
+        $baseDn = getLdapValue('LDAP_DEFAULT_BASE_DN');
 
-    $users = [];
+        $this->LdapConnection();
 
-    // 3- جلب بيانات كل User من DN
-    foreach ($membersDn as $memberDn) {
-        $user = $this->connection->query()
-            ->where('distinguishedName', '=', $memberDn)
+
+        $ouEntry = $this->connection->query()
+            ->where('objectClass', '=', 'organizationalUnit')
+            ->where('ou', '=', $ouName)
             ->first();
 
-        if ($user) {
-            $users[] = $user;
+        if (!$ouEntry) {
+            return [];  // OU غير موجود
         }
-    }
 
-    return $users;
-}
+        $ouDn = $ouEntry['dn'];
+
+        $groupEntry = $this->connection->query()
+            ->in($ouDn)
+            ->where('objectClass', '=', 'group')
+            ->where('cn', '=', $groupName)
+            ->first();
+
+        if (!$groupEntry || !isset($groupEntry['member'])) {
+            return [];
+        }
+
+        $membersDn = (array) $groupEntry['member'];
+
+        $users = [];
+
+
+        foreach ($membersDn as $memberDn) {
+            $user = $this->connection->query()
+                ->where('distinguishedName', '=', $memberDn)
+                ->first();
+
+            if ($user) {
+                $users[] = $user;
+            }
+        }
+
+        return $users;
+    }
 
 
       public function LdapConnection()

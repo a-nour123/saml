@@ -286,45 +286,38 @@
 
 
     <script>
-      $(document).ready(function() {
+  $(document).ready(function() {
     $('#department-ajax-form').on('submit', function(event) {
         event.preventDefault();
 
         // Get the CSRF token from the meta tag
         var csrfToken = $('meta[name="csrf-token"]').attr('content');
 
-        // Collect checked departments with their full hierarchical structure
-        var checkedDepartments = [];
-        $('input[type="checkbox"].parent-checkbox:checked').each(function() {
-            var checkbox = $(this);
-            var name = checkbox.val(); // The actual department name
-            var nodeId = checkbox.attr('id');
+        // Get the selected group and its OU path
+        var selectedGroup = $('input[type="radio"].group-radio:checked');
 
-            // Find associated parent input if it exists
-            var parentInput = checkbox.closest('div').find('input[type="hidden"]');
-            var parent = parentInput.length > 0 ? parentInput.val() : null;
+        if (selectedGroup.length === 0) {
+            toastr.error('Please select a group to import', 'Error');
+            return;
+        }
 
-            checkedDepartments.push({
-                name: name,
-                parent: parent
-            });
-        });
+        var groupData = {
+            group_name: selectedGroup.val(),
+            group_ou_path: selectedGroup.data('ou-path'),
+            role_id: $('.role_id').val(),
+            _token: csrfToken
+        };
 
         // AJAX request with CSRF token
-        role_id = $('.role_id').val();
         $.ajax({
             url: $(this).attr('action'),
             method: $(this).attr('method'),
             headers: {
                 'X-CSRF-TOKEN': csrfToken
             },
-            data: {
-                departments: checkedDepartments,
-                role_id : role_id,
-                _token: csrfToken
-            },
+            data: groupData,
             success: function(response) {
-                toastr.success(response.message || 'Departments saved successfully!', 'Success');
+                toastr.success(response.message || 'Users imported successfully!', 'Success');
 
                 // Redirect after successful submission
                 setTimeout(function() {
@@ -332,7 +325,7 @@
                 }, 1500);
             },
             error: function(xhr) {
-                let errorMsg = xhr.responseJSON?.message || 'An error occurred while saving departments';
+                let errorMsg = xhr.responseJSON?.message || 'An error occurred while importing users';
                 toastr.error(errorMsg, 'Error');
                 console.error(xhr);
             }
